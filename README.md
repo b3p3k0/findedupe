@@ -14,7 +14,22 @@ FinDeDupe is a comprehensive Jellyfin plugin designed to safely detect and manag
 
 ## Installation
 
-### Method 1: Manual Installation (Recommended)
+### Method 1: Plugin Repository (Recommended)
+
+1. Open your Jellyfin Admin Dashboard
+2. Navigate to **Plugins** → **Repositories**
+3. Click **Add Repository**
+4. Enter the following information:
+   - **Repository Name**: `FinDeDupe`
+   - **Repository URL**: `https://raw.githubusercontent.com/b3p3k0/findedupe/main/manifest.json`
+5. Click **Save**
+6. Go to **Plugins** → **Catalog**
+7. Find **FinDeDupe** in the catalog and click **Install**
+8. Restart your Jellyfin server when prompted
+
+**Important**: Use the raw manifest URL above, not the GitHub repository URL. The manifest URL must point directly to the JSON file.
+
+### Method 2: Manual Installation
 
 1. Download the latest release from the [Releases](../../releases) page
 2. Extract the ZIP file to get the `FinDeDupe.dll` file
@@ -25,14 +40,14 @@ FinDeDupe is a comprehensive Jellyfin plugin designed to safely detect and manag
 4. Restart your Jellyfin server
 5. The plugin will appear in your Admin Dashboard under Plugins
 
-### Method 2: Build from Source
+### Method 3: Build from Source
 
 Requirements:
 - .NET 8.0 SDK
 - Git
 
 ```bash
-git clone https://github.com/your-username/findedupe.git
+git clone https://github.com/b3p3k0/findedupe.git
 cd findedupe
 dotnet build
 ```
