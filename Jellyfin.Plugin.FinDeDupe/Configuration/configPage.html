@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>FinDeDupe — Configuration</title>
+</head>
+<body>
+  <div id="FinDeDupeConfigurationPage"
+       data-role="page"
+       class="page type-interior pluginConfigurationPage"
+       data-require="emby-input,emby-button">
+    <div data-role="content">
+      <div class="content-primary">
+        <h2>FinDeDupe Settings</h2>
+        <form id="FinDeDupeConfigurationForm" style="margin-top:1rem;">
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnpaired">Status</label>
+            <div id="FinDeDupeStatus" class="fieldDescription">Ready.</div>
+          </div>
+          <div class="formButtons" style="margin-top: 1rem;">
+            <button is="emby-button" type="submit" class="raised button-submit block emby-button">
+              Save
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script type="text/javascript">
+  (function () {
+    'use strict';
+    var PLUGIN_ID = 'AA3B5C55-4B15-4D3F-8078-D664C80F7D89';
+    function loadConfig(page) {
+      Dashboard.showLoadingMsg();
+      ApiClient.getPluginConfiguration(PLUGIN_ID).then(function () {
+        page.querySelector('#FinDeDupeStatus').innerText = 'Loaded.';
+        Dashboard.hideLoadingMsg();
+      });
+    }
+    function onSubmit(e) {
+      e.preventDefault();
+      Dashboard.showLoadingMsg();
+      ApiClient.getPluginConfiguration(PLUGIN_ID).then(function (config) {
+        return ApiClient.updatePluginConfiguration(PLUGIN_ID, config);
+      }).then(function (result) {
+        Dashboard.processPluginConfigurationUpdateResult(result);
+      });
+      return false;
+    }
+    document.addEventListener('pageshow', function (e) {
+      var page = e.target;
+      if (page && page.id === 'FinDeDupeConfigurationPage') {
+        loadConfig(page);
+        page.querySelector('#FinDeDupeConfigurationForm').addEventListener('submit', onSubmit);
+      }
+    });
+  })();
+  </script>
+</body>
+</html>
