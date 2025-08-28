@@ -91,7 +91,10 @@ pids
 *.zip
 
 # Plugin-specific ignores
-# (Keep important development files)
-# CLAUDE.md - Keep for development guidance
-# concept.txt - Keep for technical specification
-# Phase1-Checkpoint.md - Keep for testing documentation
+# Development and internal documentation
+init.sh
+Phase1-Checkpoint.md
+CLAUDE.md
+COLLAB.md
+concept.txt
+.claude/
