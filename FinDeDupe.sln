@@ -2,6 +2,8 @@
 # 
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FinDeDupe", "Jellyfin.Plugin.FinDeDupe\FinDeDupe.csproj", "{DF712243-0736-4673-9417-CF155F354934}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FinDeDupe.Tests", "FinDeDupe.Tests\FinDeDupe.Tests.csproj", "{B8F2E3C1-9876-4321-A123-456789ABCDEF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -24,5 +26,17 @@ Global
 		{DF712243-0736-4673-9417-CF155F354934}.Release|x64.Build.0 = Release|Any CPU
 		{DF712243-0736-4673-9417-CF155F354934}.Release|x86.ActiveCfg = Release|Any CPU
 		{DF712243-0736-4673-9417-CF155F354934}.Release|x86.Build.0 = Release|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Debug|x64.Build.0 = Debug|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Debug|x86.Build.0 = Debug|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Release|x64.ActiveCfg = Release|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Release|x64.Build.0 = Release|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Release|x86.ActiveCfg = Release|Any CPU
+		{B8F2E3C1-9876-4321-A123-456789ABCDEF}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

@@ -1,16 +1,28 @@
 ---
-name: "Template"
-guid: "eb5d7894-8eef-4b36-aa6f-5d124e828ce1"
-version: "1.0.0.0"
-targetAbi: "10.9.0.0"
+name: "FinDeDupe"
+guid: "AA3B5C55-4B15-4D3F-8078-D664C80F7D89"
+version: "0.1.0.0"
+targetAbi: "10.10.0.0"
 framework: "net8.0"
-overview: "Short description about your plugin"
+overview: "Detects and manages duplicate media items in Jellyfin libraries"
 description: >
-  This is a longer description that can span more than one
-  line and include details about your plugin.
+  FinDeDupe is a comprehensive duplicate media detection and management plugin 
+  for Jellyfin. It intelligently identifies duplicate movies and TV series using 
+  advanced title normalization, fuzzy matching algorithms, and provider ID 
+  validation. Features include configurable exclusion rules, dry-run mode for 
+  safe operation, comprehensive logging, and admin-only access controls. 
+  Supports both individual movies and complete TV series with safe deletion 
+  including sidecar file cleanup.
 category: "General"
-owner: "jellyfin"
+owner: "findedupe"
 artifacts:
-- "Jellyfin.Plugin.Template.dll"
+- "FinDeDupe.dll"
 changelog: >
-  changelog
+  Initial release (v0.1.0.0):
+  - Core duplicate detection engine for movies and TV series
+  - Advanced title normalization with sequel detection
+  - Configurable fuzzy matching with provider ID support
+  - Comprehensive exclusion system (library, path, glob patterns)
+  - Dry-run mode as default for safe operation
+  - Admin-only access with structured logging
+  - Foundation for scanning, planning, and deletion workflows

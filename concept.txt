@@ -1,350 +1,304 @@
-Title: Jellyfin Plugin — “Duplicate Manager” (Admin-only) — Draft Instructions for Claude Code
-Version: 0.1 (foundation milestone)
-Target Jellyfin: latest stable 10.10.x (server + web) only
+TITLE: FinDeDupe — Final Technical Blueprint + Critically Reviewed Build Plan (for a Coding Agent)
 
---------------------------------------------------------------------------------
-1) Project Summary
---------------------------------------------------------------------------------
-Goal: A Jellyfin plugin that finds duplicate Movies/Series by metadata (with fuzzy matching), lets an ADMIN choose which copy to keep, and deletes the rest using Jellyfin’s built-in delete API.
+PURPOSE
+- This document is the authoritative guide for implementing FinDeDupe (“a duplicate manager for Jellyfin”) v0.
+- It has been critically reviewed to eliminate ambiguity, conflicting guidance, and hidden assumptions.
+- Global directives for the agent:
+  1) Ensure quality of core functions over adding features.
+  2) Apply industry standards and best practices.
+  3) Do not take shortcuts.
+  4) Test and validate before presenting any task/milestone as “complete”.
 
-Non-goals (for now): auto-clean rules, external indexers, cross-library sync, file moving/renaming, non-admin use.
+======================================================================
+A) LOCKED DECISIONS (scope and behavior)
+======================================================================
+1) Name/Brand: FinDeDupe. Use this consistently across namespaces, manifest, UI strings, and routes.
+2) Jellyfin Compatibility: Support Jellyfin Server/Web ≥ 10.10.7.
+3) Template Baseline: Pin to a specific commit of jellyfin-plugin-template at scaffold-time and record that hash in the repo (README). Do not change template expectations without updating this plan and the pinned hash.
+4) v0 Scope: Detect duplicates forINDIVIDUAL MOVIES and WHOLE SERIES only (no episode-level dedupe in v0). 
+5) Deletion Semantics: “Delete” means: (a) remove the library entry from the DB, (b) delete the media directory/file plus all recognized sidecar files (.nfo, .jpg/.jpeg, .png, .srt, .sub, .idx, .nzb, .torrent, .txt, .xml, .json, .srr, .sfv), and (c) delete the containing folder if and only if it becomes empty or contains only recognized sidecars associated with the deleted item(s).
+6) Access Control: Admin-only for all UI and server endpoints. Enforce server-side authorization; also gate the UI.
+7) Confirmation: Destructive execution requires an exact typed confirmation: “DELETE N ITEMS” (where N is the number of items to be removed).
+8) Logging & Retention: Per-run CSV logs; default retention 45 days; user-configurable setting in plugin configuration. Purge on startup and after each run.
+9) Exclude System (NEW): Provide an “exclude” capability in configuration that prevents scanning and/or deletion of certain content. v0 supports:
+   - Exclude by Library (selected library IDs).
+   - Exclude by Path Prefix (absolute path starts-with).
+   - Exclude by Glob Pattern (limited wildcards: * and **).
+   Exclusions apply early (pre-scan filter) and during plan/execute (safety re-check). Excludes always win over include heuristics.
 
-Hard requirements:
-- Follow the official jellyfin-plugin-template structure, coding style, and packaging guidance.
-- UI lives in Jellyfin Web admin dashboard under “Plugins”.
-- Admin-only access.
-- Deletions use Jellyfin’s own media deletion endpoints; show a confirmation summary first.
-- Emphasis on correctness, UX clarity, and resilient error handling before new features.
+======================================================================
+B) CONSISTENCY & RISK REVIEW (devil’s advocate)
+======================================================================
+- Movies vs Series: To avoid leakage from earlier drafts, remove all movie-specific code paths, tests, and UI labels in v0. Everything must assume SERIES-only.
+- Deletion + Sidecars + Folder Removal: Jellyfin’s delete call may not remove all sidecars/folders. We will use Jellyfin delete for the item and then perform controlled filesystem cleanup. Risks:
+  - Permissions: The Jellyfin service account must have write/delete permission on all target paths.
+  - Safety: Never delete outside of a known library root; enforce path ancestry checks to prevent directory traversal or cross-library deletes.
+  - Mixed-content folders: If any non-sidecar, non-target files remain, skip folder deletion and log a warning.
+- Fuzzy Matching: Title normalization and numerals mapping are powerful but dangerous if thresholds are too low. v0 prioritizes precision over recall to prevent accidental deletes.
+- Concurrency & Idempotency: Only one execute-run at a time. Scans may be paginated/streamed and can be canceled. Executions are idempotent per item: already-deleted → “Skipped (NotFound)”.
+- Template Drift: Template APIs and Jellyfin internals evolve. We pin the template commit at scaffold-time and keep that hash recorded to preserve consistency.
+- Internationalization: v0 normalization handles English numerals and Roman numerals. No i18n in v0.
+- Performance: Large libraries require pagination, streaming, and incremental processing. Avoid materializing full collections in memory.
 
-References (for agent’s orientation; keep code compliant with them):
-- jellyfin-plugin-template (structure, config page, DI, controllers)  ⟶  see: repo and README.
-- Jellyfin 10.10.x is current stable (server + web).
-- Jellyfin docs site for plugin overview and server paths.
+======================================================================
+C) ARCHITECTURE OVERVIEW (v0)
+======================================================================
+Project: Jellyfin.Plugin.FinDeDupe (TargetFramework: net8.0)
 
---------------------------------------------------------------------------------
-2) Compliance With jellyfin-plugin-template
---------------------------------------------------------------------------------
-Use the template’s structure and interfaces verbatim as a baseline:
+Core Components
+1) TitleNormalizer (pure functions)
+   - Normalize series titles: trim/collapse whitespace, remove bracketed tags ([1080p], [x264]), strip edition/codec words, lowercase, remove punctuation noise, normalize dashes, and map sequel numerals at the tail (roman↔digit↔word).
+   - Output: TitleNorm string; flags (e.g., “hadEditionTag”).
+2) FuzzyMatcher (pure functions)
+   - Token-based similarity (token set/sort ratio); Levenshtein fallback for near-threshold tie-breaking.
+   - Thresholds:
+     - Score ≥ 90 ⇒ same title.
+     - Score 85–89 ⇒ same *only if* Year matches OR a provider ID matches (e.g., tvdb/tmdb/imdb) at the series level.
+3) DuplicateScanService
+   - Enumerate Series only (respect excludes). Create MediaFingerprint objects: { ItemId, TitleRaw, TitleNorm, Year?, ProviderIds[], Path, RootFolder, Bytes? }
+   - Bucket by (TitleNorm, Year, Kind=Series). Merge fuzzy-near buckets under strict thresholds.
+   - Output: DuplicateGroup { GroupKey, Kind=Series, Candidates[], SuggestedKeeper? }.
+4) DeletionService
+   - BuildPlan: From chosen keeper + to-delete selections, compute DeletePlan with TotalBytes and folder-removal preview (which folders become empty).
+   - Execute: Validate typed confirmation; for each item: call Jellyfin delete; then remove sidecars and, if safe, the containing folder; stream progress; produce DeleteResult and CSV.
+5) ExclusionEngine
+   - Given (LibraryIds, PathPrefixes, GlobPatterns), decide whether to include an item for scanning/deletion.
+   - Path safety: all paths validated under known library roots.
+6) Admin Controller (server-side)
+   - GET /scan?cursor=&pageSize=&kind=Series
+   - POST /plan
+   - POST /execute
+   - GET /log/{runId}
+   - DELETE /logs/purge
+   - (Optional) POST /cancel/{runId} for graceful cancellation (recommended).
+7) Config & Retention
+   - Settings: LogRetentionDays (default 45), Exclusions { LibraryIds[], PathPrefixes[], GlobPatterns[] }.
+   - Purge old logs on startup and after each run.
+8) Embedded Admin UI (vanilla HTML/JS)
+   - Pages: Scan Results → Group Detail → Confirm (typed) → Results (CSV).
+   - Admin-only menu entry under Plugins.
 
-Solution Layout (adapted from template):
-- Jellyfin.Plugin.DuplicateManager/
-  - DuplicateManagerPlugin.cs            // BasePlugin<DuplicateManagerConfiguration>
-  - DuplicateManagerConfiguration.cs     // BasePluginConfiguration
-  - Services/
-    - DuplicateScanService.cs            // scanning/grouping logic
-    - TitleNormalizer.cs                 // normalization & numerals mapping
-    - FuzzyMatcher.cs                    // token sort ratio / distance helpers
-    - DeletionService.cs                 // invoke Jellyfin delete APIs safely
-  - Controllers/
-    - DuplicateManagerController.cs      // REST endpoints for UI (admin only)
-  - Web/
-    - configurationpage.html             // admin dashboard config (template pattern)
-    - admin-ui.html                      // main UI page (list + group detail)
-    - admin-ui.js                        // fetch+render logic; keep framework-free or minimal
-    - admin-ui.css
-  - Properties/
-    - Manifest.json                      // plugin manifest per template
-  - Directory.Build.props / ruleset      // inherit from template
-  - README.md
+Data Structures (C#)
+- MediaKey { Guid ItemId; string Kind /*"Series"*/ }
+- MediaFingerprint { MediaKey Key; string TitleRaw; string TitleNorm; int? Year; string[] ProviderIds; long? Bytes; string Path; string RootFolder; }
+- DuplicateGroup { string GroupKey; string Kind /*Series*/; List<MediaFingerprint> Candidates; MediaKey? SuggestedKeeper; }
+- DeletePlan { Guid PlanId; string Kind /*Series*/; MediaKey Keeper; List<MediaKey> ToDelete; long TotalBytes; List<string> FoldersToRemovePreview; }
+- DeleteResult { Guid RunId; DateTimeOffset Started; DateTimeOffset? Ended; int Requested; int Deleted; int Skipped; int Failed; List<ItemResult> Items; string CsvPath; }
+- ItemResult { MediaKey Key; string Title; string Path; string Action; string Status; string Message; long? BytesFreed; }
+- ErrorEnvelope { string Code; string Message; object? Details; }
 
-Key template concepts to use:
-- Base plugin + configuration class.
-- IPluginConfigurationPage for admin UI registration.
-- IPluginServiceRegistrator to register services (e.g., DuplicateScanService) for DI.
-- ControllerBase to expose custom REST endpoints under /DuplicateManager.
-- Target framework: net8.0 (per template). Use Jellyfin shared libraries.
+======================================================================
+D) EXCLUDE SYSTEM (specification)
+======================================================================
+Config Model
+- Exclusions:
+  - LibraryIds: string[] (Jellyfin library IDs). If non-empty, only scan series from non-excluded libraries (i.e., we SKIP excluded library IDs).
+  - PathPrefixes: string[] (absolute path prefixes). Skip any item whose primary file path starts with one of these prefixes.
+  - GlobPatterns: string[] (case-insensitive; * and ** supported; path globs like **/Archive/**). Apply to the full absolute path.
+Resolution Rules
+- If ANY exclusion rule matches an item, the item is excluded from scanning AND cannot be added to a plan/execute (server re-check).
+- Exclusions are validated on save: nonexistent library IDs are kept but flagged in UI; invalid path prefixes/globs are rejected.
+- UI: Provide a simple list editor for each category; note that excludes reduce coverage and may hide duplicates by design.
 
-(Template quickstart and required types are in the template README. Ensure solution names, namespaces, and manifest fields are correct and consistent.)
+======================================================================
+E) SECURITY, SAFETY, AND COMPLIANCE
+======================================================================
+- Admin-only: Enforce via Jellyfin auth/roles on every endpoint. Client-side gating is additional, not sufficient.
+- Path Safety:
+  - Resolve and normalize paths; require that paths are children of a configured Jellyfin library root. Reject otherwise.
+  - For folder removal, list directory contents post-delete; remove only if empty or only recognized sidecars remain.
+  - Never follow symlinks outside library roots; treat symlinks conservatively (configurable later).
+- Race Conditions:
+  - Between plan and execute, content may change. Execution re-validates existence, permissions, and exclusions. Missing items → “Skipped (NotFound)”. Newly excluded → “Skipped (Excluded)”.
+- One Active Execution:
+  - Allow multiple scans, but only one execute-run at a time. Queue or reject new execute requests with a clear error.
+- Auditing:
+  - Log actor (admin user), timestamp, runId, and actions.
+- No external network calls; no telemetry; all local.
 
---------------------------------------------------------------------------------
-3) Target Environment & Dependencies
---------------------------------------------------------------------------------
-- Server: Jellyfin 10.10.x (latest stable).
-- Web: Jellyfin Web 10.10.x (bundled with server).
-- Language: C# (net8.0).
-- Avoid heavy third-party deps; if needed for fuzzy match, prefer lightweight, MIT-licensed, single-file or tiny NuGet with no native code.
-- No external network calls.
+======================================================================
+F) TESTING & ACCEPTANCE (Definition of Done)
+======================================================================
+Unit Tests
+- TitleNormalizer: English words ↔ digits ↔ Roman numerals at tail; removal of edition tags; bracketed garbage; punctuation/whitespace normalization.
+- FuzzyMatcher: ≥90 matches; 85–89 conditionally matches with Year/ProviderId; confirm negatives (e.g., “II” vs “11”).
+- ExclusionEngine: library ID, path prefix, and glob behavior; precedence rules.
+- DuplicateScanService: grouping stability, pagination, performance envelope (timeboxed).
+- DeletionService:
+  - BuildPlan math (TotalBytes).
+  - Sidecar detection lists (positive and negative cases).
+  - Folder safety: remove only when safe; skip with warnings.
+- Retention: purge logic (boundary at N days); never delete recent logs.
 
---------------------------------------------------------------------------------
-4) Core Functional Workflow
---------------------------------------------------------------------------------
-A) Discovery/Scan
-  1. Enumerate all items (Movies and Series) via ILibraryManager and/or Items API.
-  2. Build candidate keys using normalized (Title, Year, Kind).
-  3. Use fuzzy matching within candidate buckets to consolidate variants:
-     - “2”, “II”, “Two” equivalence mapping when they appear at tail or sequel indicators.
-     - Normalize punctuation, articles, spacing, case, diacritics.
-     - Apply token-based similarity score to catch near-duplicates (e.g., UHD/4K tags).
-  4. Group duplicates: each group contains 2+ items deemed “same title / same year (±1 if metadata sparse)”.
+Integration/Manual
+- Admin enforcement: Non-admin → 403; Admin → 200.
+- End-to-end flow on a synthetic library:
+  - Two duplicate Series across different libraries with and without excludes.
+  - Tricky title numerals; similar but distinct series should NOT be grouped.
+  - Execute with typed confirmation; validate on-disk changes and DB removal.
+  - CSV generation and retention purge.
+- Performance: 10k-series test (synthetic) completes scan in a reasonable window with pagination and without excessive memory.
 
-B) Presentation
-  1. UI lists groups with concise badges: library, resolution, container, bitrate, size, edition markers, provider IDs.
-  2. Selecting a group opens a side-by-side comparison to pick one “keeper”; all others default to “delete”.
-  3. Provide per-item toggles, tooltips, and a “select best by heuristic” button (non-destructive preview).
+Acceptance Criteria
+- All tests pass; no critical analyzer/StyleCop errors.
+- Admin-only access enforced server-side.
+- Duplicates for Series are correctly identified and reviewable.
+- Delete execution requires exact typed confirmation and produces accurate CSV logs.
+- Exclusion rules work as specified and are re-checked at execution time.
+- Packaging/installation verified on Jellyfin ≥ 10.10.7.
 
-C) Confirmation & Delete
-  1. Show a final summary dialog: N groups, total files to delete, aggregate disk space to free, plus a per-item list.
-  2. Require admin to type the exact confirmation phrase: DELETE N ITEMS (exact string) before enabling the delete button.
-  3. On confirm, call DeletionService which uses Jellyfin’s item deletion endpoints for each selected item.
-  4. Stream progress back to UI; log detailed results per item (success/failure and reason).
+======================================================================
+G) API SPEC (admin-only; JSON)
+======================================================================
+Base: /Plugins/FinDeDupe
 
-D) Post-Action
-  1. Present a results page with filters: “Deleted”, “Skipped (keeper)”, “Failed (reason)”.
-  2. Offer to export a CSV log from the server’s data dir.
+GET /scan?cursor=&pageSize=50
+- Kind is implicitly Series for v0.
+- Applies exclusions.
+- Returns: { cursorNext?, groups: [{ groupKey, candidatesCount, titleNorm, year, sampleTitles[] }], stats{ scanned, excluded, grouped } }
 
---------------------------------------------------------------------------------
-5) Data Model (internal)
---------------------------------------------------------------------------------
-Models (C# records/classes):
-- MediaKey { string NormalizedTitle; int? Year; MediaKind Kind; }
-- MediaFingerprint { Guid ItemId; string Title; int? Year; MediaKind Kind; string LibraryName; string Path; string Container; string Resolution; long? Bitrate; long? FileBytes; IDictionary<string,string> ProviderIds; }
-- DuplicateGroup { string GroupId; MediaKey Key; List<MediaFingerprint> Items; RecommendedItemId?; Status: Found|Reviewed|Deleted; }
-- DeletePlan { string GroupId; Guid KeeperId; List<Guid> DeleteIds; long TotalBytes; }
-- DeleteResult { Guid ItemId; bool Success; string? Error; }
+POST /plan
+- Body: { keeper: { itemId }, delete: [{ itemId }, ...] }
+- Server recomputes safety (excludes, folder preview).
+- Returns DeletePlan.
 
-Persist minimal state in plugin config only if necessary (e.g., last scan timestamp). Otherwise compute on demand.
+POST /execute
+- Body: { planId, confirmation: "DELETE N ITEMS" }
+- Starts execution (single active run). Streams progress (SSE or polling).
+- Returns DeleteResult at completion.
 
---------------------------------------------------------------------------------
-6) Duplicate Detection Algorithm
---------------------------------------------------------------------------------
-Normalization (TitleNormalizer):
-- Lowercase, trim, collapse whitespace.
-- Remove punctuation and bracketed tags [UHD], (Remastered), etc.
-- Strip edition words: “Director’s Cut”, “Extended”, “IMAX”, “Theatrical” — keep as attributes, not title identity.
-- Map Roman numerals↔digits↔words ONLY when appearing as sequel indicators or trailing tokens:
-  II↔2↔two, III↔3↔three, IV↔4↔four, V↔5↔five, etc.
-- Remove leading articles (the/a/an) for keying; retain original for display.
+GET /log/{runId}
+- Returns DeleteResult summary and CSV link/path.
 
-Bucketing:
-- Primary bucket key: (NormalizedTitle, Year, Kind).
-- Secondary if Year missing: (NormalizedTitle, Kind).
+DELETE /logs/purge
+- Immediately executes retention purge (useful for tests).
 
-FuzzyMatcher:
-- Within a bucket, compute pairwise similarity using:
-  - Token set/ratio (e.g., token-sort distance).
-  - Optional Levenshtein distance on stripped forms.
-- Merge items with similarity ≥ 90 (tight). For 85–90, require same ProviderId (IMDb/TMDb) OR matching Year to merge.
-- Never cross-merge different Kinds (Movie vs Series).
+(Recommended) POST /cancel/{runId}
+- Attempts to cancel an in-flight run gracefully.
 
-Heuristic recommendation for “keeper” (preview only; user can override):
-- Prefer highest resolution > bitrate > remux/raw > size > most complete (runtime present, subs/tracks) > path not in temp.
-- Display the heuristic result but DO NOT auto-delete—user must confirm.
+Errors: { code, message, details? } with appropriate HTTP status.
 
---------------------------------------------------------------------------------
-7) Server-Side APIs & Services
---------------------------------------------------------------------------------
-Access:
-- Prefer ILibraryManager / repository services for fast in-process enumeration when available (as per template’s guidance for DI services).
-- Expose minimal plugin REST endpoints for the admin UI (ControllerBase):
-  - GET  /DuplicateManager/scan?kind=movie|series            // returns grouped duplicates (paged)
-  - POST /DuplicateManager/plan                               // body: keeper + delete choices → returns DeletePlan
-  - POST /DuplicateManager/execute                            // body: DeletePlan → streams per-item status (SSE or chunked)
-  - GET  /DuplicateManager/log/{runId}                        // download CSV log for a run
+======================================================================
+H) ADMIN UI (embedded; vanilla)
+======================================================================
+- Scan Results:
+  - Table: Title (raw sample), Year, Candidates Count, Open.
+  - Toolbar: Refresh, Page controls, “Exclusions” (link to config).
+- Group Detail:
+  - List candidates with: TitleRaw, Path, Bytes, ProviderIds.
+  - Radio to choose Keeper; checkboxes to choose deletions.
+  - Button: “Build Plan”.
+- Confirm:
+  - Summary: N items to delete, total bytes to free, folders to remove (preview).
+  - Text input must equal: “DELETE N ITEMS”.
+  - Button: “Execute”.
+- Results:
+  - Live progress (deleted/failed/skipped).
+  - CSV download link.
+  - “View Logs” (history).
+- Config Page:
+  - LogRetentionDays (default 45, min 7, max 365).
+  - Exclusions editor: libraries (multi-select), path prefixes, glob patterns (with help text).
+  - Note warnings about reduced coverage.
 
-Deletion:
-- Use Jellyfin’s item deletion (item-level DELETE) with proper admin auth context.
-- Handle permission and filesystem errors gracefully; return rich errors to UI.
-- If an item can’t be deleted, leave it and mark the group “partially resolved”.
+======================================================================
+I) DETAILED TASKS (small, simple, each with a clear goal & DoD)
+======================================================================
+Task 0 — Scaffold & Pin
+- Goal: Generate project from pinned template commit; record hash in README.
+- DoD: Debug build passes; Admin → Plugins shows FinDeDupe; config page renders.
 
-Safety:
-- Dry-run mode: compute plan and estimated space saved without calling delete.
-- Always require a typed confirmation phrase before execute.
-- Audit log written to plugin data folder with timestamps and item metadata (no PII).
+Task 1 — Manifest & Config Model
+- Goal: Implement manifest (name, description, GUID stable). Add Config with LogRetentionDays=45 and Exclusions { LibraryIds[], PathPrefixes[], GlobPatterns[] }.
+- DoD: Config load/save OK; validation on save; retention value visible in UI.
 
---------------------------------------------------------------------------------
-8) Admin UI Placement & Navigation
---------------------------------------------------------------------------------
-- Register an Admin Dashboard entry under “Plugins” named “Duplicate Manager”.
-- Single-page flow with in-panel navigation (no external server needed).
+Task 2 — ExclusionEngine
+- Goal: Implement exclusion evaluation (library ID, path prefix, glob). Add path normalization and ancestry checks.
+- DoD: Unit tests cover each exclusion mode and mixed cases; invalid inputs rejected in config.
 
-Routes (front-end within the plugin page):
-- /duplicates                      → Group list (table)
-- /duplicates/{groupId}            → Group detail & selection
-- /review                          → Final review & confirmation
-- /results/{runId}                 → Results & export
+Task 3 — TitleNormalizer (Series-focused)
+- Goal: Implement normalization; English numeral + Roman mapping when at title tail; edition/garbage stripping.
+- DoD: Unit tests for representative tricky titles (II/2/two, bracketed tags, punctuation noise).
 
-Security:
-- Gate all server endpoints to Admin users only.
-- In UI, if non-admin somehow reaches page, show “Admins only” message.
+Task 4 — FuzzyMatcher
+- Goal: Implement token-set/sort similarity + Levenshtein fallback; thresholds as specified.
+- DoD: Unit tests for ≥90, 85–89 with year/providerId, and negative pairs (“II” vs “11”, unrelated titles).
 
---------------------------------------------------------------------------------
-9) ASCII Wireframes
---------------------------------------------------------------------------------
-A) Admin Dashboard Entry (Plugins list)
-+--------------------------------------------------------------+
-| Plugins                                                      |
-|  - Trakt                                                    |
-|  - Subtitle Extractor                                       |
-|  - Duplicate Manager   [Open]  [Configure]                   |
-+--------------------------------------------------------------+
+Task 5 — DuplicateScanService (Series-only)
+- Goal: Enumerate Series (respect exclusions), fingerprint, bucket, merge fuzzy-near, build DuplicateGroups; pagination + cancellation.
+- DoD: Unit tests on fixtures; scan stats logged; no OOM on large lists (streamed/paged).
 
-B) Duplicate Groups List (/duplicates)
-+--------------------------------------------------------------------------------------+
-| Duplicate Manager                                                                     |
-| [Scan Now]  Kind: [Movies v]  Filter: [Has 3+ items]  [Show series]  [Dry-run: on]   |
-|--------------------------------------------------------------------------------------|
-| Group                         Items  Top Qualities                     Action         |
-| The Matrix (1999)             3      2160p, 1080p                       [Review]      |
-| Dune (2021)                   2      2160p, 2160p (HDR10 vs SDR)        [Review]      |
-| Aliens (1986)                 4      4K Remux, 1080p x264               [Review]      |
-| ...                                                                                   |
-|--------------------------------------------------------------------------------------|
-| Legend: mouse-over badges show container, bitrate, size, edition tags, paths.        |
-+--------------------------------------------------------------------------------------+
+Task 6 — SuggestedKeeper
+- Goal: Compute non-binding suggestion: prefer higher quality/4K > better codecs > larger file > presence of external subs > newer modified date.
+- DoD: Deterministic selection with unit tests.
 
-C) Group Detail (/duplicates/{groupId})
-+--------------------------------------------------------------------------------------+
-| The Matrix (1999) — Choose ONE to keep                                               |
-|--------------------------------------------------------------------------------------|
-| [ ] Keep | Title                  | Res/Codec     | Bitrate | Size   | Path ...       |
-| (•)      | The Matrix (1999)      | 2160p HEVC    | 65 Mb/s | 70 GB  | /media/UHD/…  |
-| ( )      | The Matrix (1999)      | 1080p AVC     | 12 Mb/s | 12 GB  | /media/1080/… |
-| ( )      | The Matrix (1999)      | 720p x264     |  4 Mb/s |  4 GB  | /old/720/…    |
-|--------------------------------------------------------------------------------------|
-| [Select Best by Heuristic]   [Back]   [Add to Plan]                                   |
-+--------------------------------------------------------------------------------------+
+Task 7 — Controller (scan/plan)
+- Goal: Implement GET /scan (paged) and POST /plan; admin enforcement; structured errors.
+- DoD: 403 vs 200 verified; JSON contracts stable and documented.
 
-D) Review & Confirm (/review)
-+--------------------------------------------------------------------------------------+
-| Review Delete Plan                                                                    |
-| Groups: 12   Items to delete: 23   Est. space freed: 1.3 TB                           |
-|--------------------------------------------------------------------------------------|
-| Group                Delete Items (paths)                                            |
-| The Matrix (1999)    /media/1080/… , /old/720/…                                     |
-| Dune (2021)          /rips/dune_sdr.mkv                                             |
-| ...                                                                                  |
-|--------------------------------------------------------------------------------------|
-| Type to confirm:  DELETE 23 ITEMS      [______________]                              |
-| [Execute Deletes] (disabled until exact phrase)    [Cancel]  [Export CSV (dry-run)]  |
-+--------------------------------------------------------------------------------------+
+Task 8 — DeletionService (BuildPlan)
+- Goal: From keeper + delete selections, compute TotalBytes; sidecar lists; folder-removal preview with safety rules.
+- DoD: Unit tests validate bytes math and folder preview logic.
 
-E) Results (/results/{runId})
-+--------------------------------------------------------------------------------------+
-| Results — Run #2025-08-28-10-32                                                      |
-|--------------------------------------------------------------------------------------|
-| Status    | Item                                | Message                            |
-| Deleted   | /media/1080/Matrix.mkv              | OK                                 |
-| Failed    | /old/720/Matrix.mkv                 | FS permission denied               |
-| Skipped   | /media/UHD/Matrix_2160p_remux.mkv   | keeper                             |
-|--------------------------------------------------------------------------------------|
-| [Download Log CSV]   [Back to groups]                                               |
-+--------------------------------------------------------------------------------------+
+Task 9 — Execute (Jellyfin delete + sidecars + folder)
+- Goal: POST /execute with confirmation phrase; single-run lock; progress events; robust error handling per item.
+- DoD: Integration test confirms DB entry removed, files removed, empty folders removed safely, mixed-content folders preserved with warnings; partial failures recorded.
 
---------------------------------------------------------------------------------
-10) Error Handling & UX Safeguards
---------------------------------------------------------------------------------
-- Every controller method returns structured errors {code, message, details}.
-- Detect and surface:
-  - FS permissions / read-only mount
-  - Item in use / locked
-  - Missing file (stale library entry)
-  - API failures (HTTP status, response text)
-- Partial failures never abort entire run; continue and report per-item.
-- Long operations: stream progress (SSE) or poll; show progress bar, cancel button.
-- All destructive actions require explicit typed confirmation and are non-reversible.
+Task 10 — CSV Logging & Retention
+- Goal: Write CSV per run; purge > LogRetentionDays on startup and post-run.
+- DoD: CSV columns: RunId, Timestamp, ItemId, Title, Path, Action, Status, Message, BytesFreed. Retention unit tests pass.
 
---------------------------------------------------------------------------------
-11) Coding Tasks (Milestone 1 — Foundation)
---------------------------------------------------------------------------------
-- [ ] Scaffold from jellyfin-plugin-template; set net8.0; fill Manifest.json.
-- [ ] Implement DuplicateManagerConfiguration (BasePluginConfiguration).
-- [ ] Implement DuplicateManagerPlugin : BasePlugin<DuplicateManagerConfiguration>.
-- [ ] Register services via IPluginServiceRegistrator:
-      - TitleNormalizer, FuzzyMatcher, DuplicateScanService, DeletionService.
-- [ ] DuplicateScanService:
-      - Enumerate Movies & Series.
-      - Build MediaFingerprint records.
-      - Normalize titles & compute groups.
-      - Return paged DuplicateGroup list with a recommended keeper (non-binding).
-- [ ] DeletionService:
-      - Build DeletePlan from client selections.
-      - Execute deletes via Jellyfin item deletion endpoint(s), admin context only.
-      - Return per-item DeleteResult; write CSV log.
-- [ ] Controller: DuplicateManagerController
-      - GET /scan
-      - POST /plan
-      - POST /execute
-      - GET /log/{runId}
-- [ ] Admin UI
-      - Add Plugin configuration page entry (IPluginConfigurationPage).
-      - Implement groups list, group detail, review/confirm, results.
-      - Use fetch/XHR to hit controller endpoints; simple HTML/CSS/vanilla JS.
-      - Input masking for confirmation phrase.
-- [ ] Permissions: middleware/guards to restrict endpoints to Admins.
-- [ ] Telemetry/logging: structured logs; CSV export per run.
-- [ ] Unit tests for TitleNormalizer, numeral mapping, fuzzy grouping thresholds.
+Task 11 — Admin UI (vanilla)
+- Goal: Implement four screens + config page. No frameworks; accessible keyboard navigation; clear destructive affordances.
+- DoD: Manual end-to-end passes: scan → select → plan → typed confirm → execute → CSV → logs.
 
---------------------------------------------------------------------------------
-12) Implementation Notes
---------------------------------------------------------------------------------
-Title normalization detail:
-- Replace roman numerals at end: /\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b/ ↔ digits.
-- Map word numbers: two, three, four ↔ digits, but only when final token or sequel marker.
-- Remove edition adornments: /(extended|director'?s cut|imax|remastered|uhd|hdr|atmos|dts[- ]?x|remux|proper|repack)/i (keep as flags).
-- Strip “[...], (...), {...}” tokens often used for encodes.
+Task 12 — Acceptance & Packaging
+- Goal: Ensure all quality gates; produce Release build; manual install on Jellyfin ≥ 10.10.7.
+- DoD: Acceptance criteria met; smoke-test clean.
 
-Fuzzy thresholds:
-- SIM(a,b) ≥ 90 → same; 85–89 → same if Year equal or ProviderId matches (IMDb/TMDb/TVDB).
-- Below threshold → separate groups.
+======================================================================
+J) CODING GUIDELINES (must follow)
+======================================================================
+- Code Quality: Small, testable services; DI-friendly; no static hidden state.
+- Cancellation & Timeouts: Long operations accept CancellationToken; timebox filesystem operations.
+- Logging: Structured logs with RunId correlation; clear error codes (“NotFound”, “PermissionDenied”, “Excluded”, “Conflict”).
+- No Shortcuts: Do not bypass safety checks; do not “best guess” deletes without explicit selection + typed confirmation.
+- No Network Calls: Keep v0 offline; do not add telemetry.
+- Lint/Analyzers: Keep StyleCop/analysers enabled. Public members documented. Fix all errors; warnings triaged or suppressed with rationale.
+- Tests First: Implement unit tests alongside each service. Do not mark a task complete until tests and manual validations pass.
 
-Heuristic scoring keys:
-- Resolution rank: 2160p > 1440p > 1080p > 720p > SD
-- Container preference: mkv/mp4 > others
-- Codec: hevc/av1 > avc > older
-- Bitrate (higher better), then size
-- Presence of multi-audio/subs
+======================================================================
+K) APPENDIX — PSEUDOCODE SNIPPETS
+======================================================================
+TitleNormalizer.Normalize(seriesTitle):
+  t = lower(trim(seriesTitle))
+  t = remove_bracketed_segments(t)         // [1080p], (x265), {whatever}
+  t = strip_common_editions(t)             // remastered, extended, director's cut, etc.
+  t = collapse_whitespace_and_punct(t)
+  if ends_with_sequel_word_or_roman(t): t = normalize_trailing_sequel(t)  // "two"→"2"; "ii"→"2"
+  return t
 
-Deletion API:
-- Resolve server-side to item IDs and call the Jellyfin item deletion endpoint(s) for each ID with admin auth.
-- Confirm the server is configured to allow deletion and has FS permissions; if not, return actionable error.
+FuzzyMatcher.IsSameTitle(a, b, yearMatch, providerIdIntersect):
+  score = token_set_ratio(a, b)
+  if score >= 90: return true
+  if score >= 85 and (yearMatch or providerIdIntersect): return true
+  return false
 
-CSV Log columns:
-- Timestamp, RunId, GroupId, ItemId, Path, Title, Year, Action(Deleted/Failed/Skipped), Message, BytesFreed
+ExclusionEngine.IsExcluded(item):
+  if item.LibraryId in Exclusions.LibraryIds: return true
+  if any(item.Path startsWith prefix for prefix in Exclusions.PathPrefixes): return true
+  if any(matches_glob(item.Path, g) for g in Exclusions.GlobPatterns): return true
+  return false
 
---------------------------------------------------------------------------------
-13) Testing Checklist
---------------------------------------------------------------------------------
-- Scan speed acceptable on 10k+ items (timebox and paginate).
-- No false merges across different titles; spot-check tricky numerals (II vs 11).
-- Admin-only enforcement (UI and API).
-- Dry-run produces consistent plan; plan == execute subset.
-- Filesystem error surfaces cleanly; run continues for other items.
-- Deletion removes from library and filesystem per server config.
-- UI confirmation phrase enforced exactly; copy/paste whitespace ignored.
-- CSV export opens in spreadsheet apps.
+FolderRemoval.IsSafeToRemove(dir):
+  entries = list(dir)
+  if entries empty: return true
+  if all(e is recognizedSidecar for e in entries): return true
+  return false
 
---------------------------------------------------------------------------------
-14) Build, Packaging, and Local Debugging
---------------------------------------------------------------------------------
-- Build with dotnet SDK 8.0 in Release; produce plugin DLL.
-- Place under Jellyfin data dir: <data>/plugins/DuplicateManager/<plugin>.dll
-- Follow template’s VS Code / Visual Studio debugging steps to launch Jellyfin with plugin loaded.
-- Maintain Manifest.json with correct Name, Guid, Version, TargetAbi if required.
+======================================================================
+L) NOTES FOR FUTURE MINOR RELEASES (not in v0)
+======================================================================
+- Episode-level dedupe; Movie support; “quarantine” (move instead of delete) mode; richer quality heuristics via MediaInfo; i18n; UI polish; advanced exclude rules (regex, provider-id blocklist).
 
---------------------------------------------------------------------------------
-15) Future Milestones (explicitly out-of-scope for v0.1)
---------------------------------------------------------------------------------
-- Auto-selection rules (e.g., always keep highest resolution).
-- Scheduled scans and notifications.
-- Multi-language title normalization and locale-aware equivalences.
-- “Keep on disk but remove from library only” (depends on Jellyfin capabilities).
-- Integrations (webhooks, *arr apps, request tools).
-- Per-library policies and ignore lists (paths, patterns).
-- Batch undo (not feasible with hard deletes).
-
---------------------------------------------------------------------------------
-16) Acceptance Criteria (for v0.1)
---------------------------------------------------------------------------------
-- Plugin loads on Jellyfin 10.10.x and registers under Admin → Plugins as “Duplicate Manager”.
-- A scan finds duplicate groups using the fuzzy logic rules above and displays them with useful metadata.
-- Admin can choose keepers per group, preview a DeletePlan, and must confirm with a typed phrase.
-- Execute deletes non-keepers via Jellyfin delete API; results are streamed or polled and displayed.
-- Errors are shown per item; CSV log is offered after run.
-- No crashes; partial failures do not block others; clear user guidance appears for next steps.
-
---------------------------------------------------------------------------------
-References (for developer alignment)
---------------------------------------------------------------------------------
-- jellyfin-plugin-template (structure, config pages, DI, controllers). :contentReference[oaicite:0]{index=0}
-- Latest Jellyfin 10.10.x releases (server & web). :contentReference[oaicite:1]{index=1}
-- Official Jellyfin docs: plugins overview & developer docs. :contentReference[oaicite:2]{index=2}
+— End of document —

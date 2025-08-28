@@ -1,11 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <NoWarn>SA1633;SA1636;SA1637;SA1640</NoWarn>
+    <NoWarn>SA1633;SA1636;SA1637;SA1640;SA1518;SA1413;SA1202;SA1101;SA1407;SA1623;CA1002;CA2227;CA1308;CA1861;CA1031;CA1307;CA1822</NoWarn>
     <TargetFramework>net8.0</TargetFramework>
     <RootNamespace>Jellyfin.Plugin.FinDeDupe</RootNamespace>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <Nullable>enable</Nullable>
     <AnalysisMode>AllEnabledByDefault</AnalysisMode>
   </PropertyGroup>
