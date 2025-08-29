@@ -22,6 +22,9 @@ FinDeDupe is a comprehensive Jellyfin plugin designed to safely detect and manag
 4. Enter the following information:
    - **Repository Name**: `FinDeDupe`
    - **Repository URL**: `https://raw.githubusercontent.com/b3p3k0/findedupe/main/manifest.json`
+   
+   ⚠️ **Critical**: Use the RAW GitHub URL above, NOT `https://github.com/b3p3k0/findedupe`
+   
 5. Click **Save**
 6. Go to **Plugins** → **Catalog**
 7. Find **FinDeDupe** in the catalog and click **Install**
@@ -155,6 +158,15 @@ Log retention is automatically managed (default: 30 days).
 ## Troubleshooting
 
 ### Common Issues
+
+**Plugin Repository Error: "Failed to deserialize the plugin manifest"**
+```
+System.Text.Json.JsonException: '<' is an invalid start of a value
+```
+- **Cause**: You used the wrong URL when adding the plugin repository
+- **Wrong URL**: `https://github.com/b3p3k0/findedupe` (returns HTML)
+- **Correct URL**: `https://raw.githubusercontent.com/b3p3k0/findedupe/main/manifest.json` (returns JSON)
+- **Fix**: Remove the incorrect repository and re-add using the raw GitHub URL
 
 **Plugin doesn't appear in dashboard**
 - Verify the DLL is in the correct plugins directory
